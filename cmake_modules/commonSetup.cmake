@@ -206,9 +206,6 @@ IF ("${COMMONSETUP_DONE}" STREQUAL "")
     endif()
   endmacro(HPCC_ADD_SUBDIRECTORY)
 
-  set ( SCM_GENERATED_DIR ${CMAKE_BINARY_DIR}/generated )
-  include_directories (${SCM_GENERATED_DIR})
-
   ##################################################################
 
   # Build tag generation

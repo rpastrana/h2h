@@ -25,30 +25,6 @@ set_environmentvars
 
 source @HPCC_CONF_DIR@/@HDFSCONN_CONF_FILE@
 
-CLASSPATH=$CLASSPATH:$HADOOP_CONF_DIR
-
-for f in $HADOOP_SHARE_DIR/*.jar ; do
-    CLASSPATH=$CLASSPATH:$f
-done
-
-for f in $HADOOP_SHARE_DIR/lib/*.jar ; do
-    CLASSPATH=$CLASSPATH:$f
-done
-
-if [ -n "$TARBALL_HADOOP_LOCATION"  ]; then
-    CLASSPATH=$CLASSPATH:$TARBALL_HADOOP_LOCATION/conf
-
-    for f in $TARBALL_HADOOP_LOCATION/*.jar ; do
-        CLASSPATH=$CLASSPATH:$f
-    done
-
-    for f in $TARBALL_HADOOP_LOCATION/lib/*.jar ; do
-        CLASSPATH=$CLASSPATH:$f
-    done
-fi
-
-export CLASSPATH=$CLASSPATH
-
 PID=$$
 
 idfound=0;

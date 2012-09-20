@@ -22,7 +22,6 @@ SET ( HPCC_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR})
 INCLUDE (${HPCC_SOURCE_DIR}/version.cmake)
 
 SET ( CMAKE_MODULE_PATH "${HPCC_SOURCE_DIR}/cmake_modules")
-#SET ( EXECUTABLE_OUTPUT_PATH "${CMAKE_BINARY_DIR}/${CMAKE_BUILD_TYPE}/bin" )
 SET ( PRODUCT_PREFIX "hpccsystems" )
 
 INCLUDE(${CMAKE_MODULE_PATH}/optionDefaults.cmake)
@@ -136,58 +135,20 @@ if ( NOT MAKE_DOCS_ONLY )
 
     add_subdirectory (ecl)
 
-    #IF TARBALLED_HADOOP_PATH IS NOT PASSED IN, DEFAULT TO /usr/local/hadoop
-    #AT BUILD TIME THIS PATH WILL BE USED TO SEARCH FOR:
-    # ${TARBALLED_HADOOP_PATH}/src/c++/libhdfs/hdfs.h
-    # ${TARBALLED_HADOOP_PATH}/c++/${osdir}/libhdfs.so
-
-    #AT RUN TIME THIS PATH WILL BE USED TO SEARCH FOR:
-    # ${TARBALLED_HADOOP_PATH}/conf
-    # ${TARBALLED_HADOOP_PATH}/*.jar
-    # ${TARBALLED_HADOOP_PATH}/lib/*.jar
-
-    #####################################################
-    # hadoop install packages layout files in this manner:
-    # conf files  -> /etc/hadoop
-    # *.jar files -> /usr/share/hadoop & /usr/share/hadoop/lib
-    # hdfslib     -> /usr/lib or /usr/lib64
-    #####################################################
-
-    option(TARBALLED_HADOOP_PATH "Set the Hadoop path.")
-    if( NOT TARBALLED_HADOOP_PATH )
-        SET (TARBALLED_HADOOP_PATH "/usr/local/hadoop")
-    endif()
-
-    #set other paths
-    #generate config for script.
-    #add script processor for vars.
-
     SET ( HPCC_ETC_DIR "${CMAKE_INSTALL_PREFIX}/${OSSDIR}/etc")
     SET ( HPCC_CONF_DIR "${CMAKE_INSTALL_PREFIX}/${OSSDIR}${CONFIG_DIR}")
     SET ( HDFSCONN_CONF_FILE "hdfsconnector.conf" )
     SET ( HDFSCONN_EXE_NAME "hdfsconnector" )
     SET ( HDFSCONN_EXE_PATH "${EXEC_PATH}/${HDFSCONN_EXE_NAME}")
 
-    SET ( HADOOP_STD_CONF_PATH "/etc/hadoop" )
-    SET ( HADOOP_STD_SHARE_PATH "/usr/share/hadoop" )
-
-    find_package(JNI REQUIRED)
-    find_package(LIBHDFS REQUIRED)
-
     configure_file("hdfsconnector.conf.in" "hdfsconnector.conf")
     configure_file("hdfspipe.in" "hdfspipe" @ONLY )
 
+    FIND_PACKAGE(CURL REQUIRED)
+
     SET ( SRC hdfsconnector.cpp hdfsconnector.hpp)
 
-    include_directories (
-                          ${CMAKE_BINARY_DIR}
-                          ${CMAKE_BINARY_DIR}/oss
-                          ${JNI_INCLUDE_DIRS}
-                          ${JAVA_INCLUDE_PATH}
-                          ${JAVA_INCLUDE_PATH2}
-                          ${LIBHDFS_INCLUDE_DIR}  
-                         )
-
+    include_directories ( ${CMAKE_BINARY_DIR} ${CURL_INCLUDE_DIR} )
     HPCC_ADD_EXECUTABLE( ${HDFSCONN_EXE_NAME} ${SRC} )
 
     SET ( INSTALLDIR "${OSSDIR}/bin")
@@ -195,11 +156,9 @@ if ( NOT MAKE_DOCS_ONLY )
     Install ( PROGRAMS ${CMAKE_CURRENT_BINARY_DIR}/hdfspipe DESTINATION ${INSTALLDIR} COMPONENT Runtime )
     Install ( FILES ${CMAKE_CURRENT_BINARY_DIR}/hdfsconnector.conf DESTINATION ${HPCC_CONF_DIR} COMPONENT Runtime )
 
-    target_link_libraries ( hdfsconnector
-                            ${JAVA_JVM_LIBRARY}
-                            ${LIBHDFS_LIBRARIES}
-                          )
+    target_link_libraries ( hdfsconnector ${CURL_LIBRARY} )
 
     INCLUDE(CPack)
+
 endif()
 add_subdirectory(docs)

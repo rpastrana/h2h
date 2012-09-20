@@ -18,393 +18,229 @@
 
 #include "hdfsconnector.hpp"
 
-hdfsFS Hdfs_Connector::getHdfsFS()
+int WebHdfs_Connector::reachWebHDFS()
 {
-    return fs;
-}
+    int retval = RETURN_FAILURE;
 
-tOffset Hdfs_Connector::getBlockSize(const char * filename)
-{
-    if (!fs)
+    if (!curl)
     {
-        fprintf(stderr, "Could not connect to hdfs");
-        return RETURN_FAILURE;
+        fprintf(stderr, "Could not reach WebHDFS\n");
+        return retval;
     }
 
-    hdfsFileInfo *fileInfo = NULL;
+    curl_easy_reset(curl);
 
-    if ((fileInfo = hdfsGetPathInfo(fs, filename)) != NULL)
+    string filestatusstr;
+
+    string getFileStatus;
+    getFileStatus.append(baseurl);
+    getFileStatus.append("?op=GETFILESTATUS");
+
+    fprintf(stderr, "Testing connection: %s\n", getFileStatus.c_str());
+    curl_easy_setopt(curl, CURLOPT_URL, getFileStatus.c_str());
+    curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 1L);
+
+    //Dont' use default curl WRITEFUNCTION bc it outputs value to STDOUT.
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeToStrCallBackCurl);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &filestatusstr);
+
+    CURLcode res = curl_easy_perform(curl);
+
+    if (res == CURLE_OK)
+        retval = EXIT_SUCCESS;
+    else
+        fprintf(stderr, "Could not reach WebHDFS\n");
+
+    return retval;
+}
+
+unsigned long WebHdfs_Connector::getFileSizeWeb(const char * fileurl)
+{
+    WebHdfsFileStatus filestat;
+
+    if (getFileStatusWeb(fileurl, &filestat) != RETURN_FAILURE)
+        return filestat.length;
+    else
+        return 0;
+}
+
+int WebHdfs_Connector::getFileStatusWeb(const char * fileurl, WebHdfsFileStatus * filestat)
+{
+    int retval = RETURN_FAILURE;
+
+    if (!curl)
     {
-        tOffset bsize = fileInfo->mBlockSize;
-        hdfsFreeFileInfo(fileInfo, 1);
-        return bsize;
+        fprintf(stderr, "Could not connect to WebHDFS\n");
+        return retval;
+    }
+
+    string filestatusstr;
+    string requestheader;
+
+    string getFileStatus;
+    getFileStatus.append(fileurl);
+
+    if (hasUserName())
+    {
+        getFileStatus.append("?user.name=");
+        getFileStatus.append(username);
+        getFileStatus.append("&op=GETFILESTATUS");
     }
     else
-    {
-        fprintf(stderr, "Error: hdfsGetPathInfo for %s - FAILED!\n", filename);
-        return RETURN_FAILURE;
-    }
+        getFileStatus.append("?op=GETFILESTATUS");
 
-    return RETURN_FAILURE;
-}
+    curl_easy_reset(curl);
 
-long Hdfs_Connector::getFileSize(const char * filename)
-{
-    if (!fs)
-    {
-        fprintf(stderr, "Could not connect to hdfs");
-        return RETURN_FAILURE;
-    }
+    fprintf(stderr, "Retrieving file status: %s\n", getFileStatus.c_str());
 
-    hdfsFileInfo *fileInfo = NULL;
+    curl_easy_setopt(curl, CURLOPT_URL, getFileStatus.c_str());
+    curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 1L);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeToStrCallBackCurl);
 
-    if ((fileInfo = hdfsGetPathInfo(fs, filename)) != NULL)
-    {
-        long fsize = fileInfo->mSize;
-        hdfsFreeFileInfo(fileInfo, 1);
-        return fsize;
-    }
-    else
-    {
-        fprintf(stderr, "Error: hdfsGetPathInfo for %s - FAILED!\n", filename);
-        return RETURN_FAILURE;
-    }
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &filestatusstr);
 
-    return RETURN_FAILURE;
-}
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeToStrCallBackCurl);
+    curl_easy_setopt(curl, CURLOPT_WRITEHEADER, &requestheader);
 
-long Hdfs_Connector::getRecordCount(long fsize, int clustersize, int reclen, int nodeid)
-{
-    long readSize = fsize / reclen / clustersize;
-    if (fsize % reclen)
-    {
-        fprintf(stderr, "filesize (%lu) not multiple of record length(%d)", fsize, reclen);
-        return RETURN_FAILURE;
-    }
-    if ((fsize / reclen) % clustersize >= nodeid + 1)
-    {
-        readSize += 1;
-        fprintf(stderr, "\nThis node will pipe one extra rec\n");
-    }
-    return readSize;
-}
+    CURLcode res = curl_easy_perform(curl);
 
-void Hdfs_Connector::ouputhosts(const char * rfile)
-{
-    if (!fs)
+    if (res == CURLE_OK)
     {
-        fprintf(stderr, "Could not connect to hdfs");
-        return;
-    }
 
-    char*** hosts = hdfsGetHosts(fs, rfile, 1, 1);
-    if (hosts)
-    {
-        fprintf(stderr, "hdfsGetHosts - SUCCESS! ... \n");
-        int i = 0;
-        while (hosts[i])
+        try
         {
-            int j = 0;
-            while (hosts[i][j])
+            /*
+             * Not using JSON parser to avoid 3rd party deps
+             */
+
+            filestat->accessTime = -1;
+            filestat->blockSize = -1;
+            filestat->group = "";
+            filestat->length = -1;
+            filestat->modificationTime = -1;
+            filestat->owner = "";
+            filestat->pathSuffix = "";
+            filestat->permission = "";
+            filestat->replication = -1;
+            filestat->type = "";
+
+            fprintf(stderr, "%s.\n", filestatusstr.c_str());
+
+            if (filestatusstr.find("FileStatus") >=0 )
             {
-                fprintf(stderr, "\thosts[%d][%d] - %s\n", i, j, hosts[i][j]);
-                ++j;
-            }
-            ++i;
-        }
-    }
-}
-
-void Hdfs_Connector::outputFileInfo(hdfsFileInfo * fileInfo)
-{
-    printf("Name: %s, ", fileInfo->mName);
-    printf("Type: %c, ", (char) (fileInfo->mKind));
-    printf("Replication: %d, ", fileInfo->mReplication);
-    printf("BlockSize: %ld, ", fileInfo->mBlockSize);
-    printf("Size: %ld, ", fileInfo->mSize);
-    printf("LastMod: %s", ctime(&fileInfo->mLastMod));
-    printf("Owner: %s, ", fileInfo->mOwner);
-    printf("Group: %s, ", fileInfo->mGroup);
-    printf("Permissions: %d \n", fileInfo->mPermissions);
-}
-
-void Hdfs_Connector::getLastXMLElement(string * element, const char * xpath)
-{
-    int lasttagclosechar = strlen(xpath) - 1;
-    int lasttagopenchar = 0;
-
-    while (lasttagclosechar >= 0)
-    {
-        if (xpath[lasttagclosechar] == '>')
-            break;
-        lasttagclosechar--;
-    }
-    lasttagopenchar = lasttagclosechar;
-    while (lasttagopenchar >= 0)
-    {
-        if (xpath[lasttagopenchar] == '<')
-            break;
-        lasttagopenchar--;
-    }
-
-    element->append(xpath, lasttagopenchar + 1, lasttagclosechar - 1);
-}
-
-void Hdfs_Connector::getLastXPathElement(string * element, const char * xpath)
-{
-    int lastdelimiter = strlen(xpath) - 1;
-    while (lastdelimiter >= 0)
-    {
-        if (xpath[lastdelimiter] == '/')
-            break;
-        lastdelimiter--;
-    }
-
-    element->append(xpath, lastdelimiter + 1, strlen(xpath) - lastdelimiter);
-}
-
-void Hdfs_Connector::getFirstXPathElement(string * element, const char * xpath)
-{
-    int len = strlen(xpath);
-    for (int i = 0; i < len; i++)
-    {
-        element->append(1, xpath[i]);
-        if (xpath[i] == '/')
-            break;
-    }
-}
-
-void Hdfs_Connector::xpath2xml(string * xml, const char * xpath, bool open)
-{
-    vector<string> elements;
-
-    unsigned xpathlen = strlen(xpath);
-    for (unsigned i = 0; i < xpathlen;)
-    {
-        string tmpstr;
-        for (; i < strlen(xpath) && xpath[i] != '/';)
-            tmpstr.append(1, xpath[i++]);
-        i++;
-        if (tmpstr.size() > 0)
-            elements.push_back(tmpstr);
-    }
-
-    if (open)
-    {
-        for (vector<string>::iterator t = elements.begin(); t != elements.end() - 1; ++t)
-            xml->append(1, '<').append(t->c_str()).append(1, '>');
-    }
-    else
-    {
-        vector<string>::reverse_iterator rit;
-        for (rit = elements.rbegin() + 1; rit < elements.rend(); ++rit)
-            xml->append("</").append(rit->c_str()).append(1, '>');
-    }
-}
-
-int Hdfs_Connector::readXMLOffset(const char * filename, unsigned long seekPos, unsigned long readlen,
-        const char * rowTag, const char * headerText, const char * footerText, unsigned long bufferSize)
-{
-    string xmlizedxpath;
-    string elementname;
-    string rootelement;
-    xpath2xml(&xmlizedxpath, rowTag, true);
-    getLastXPathElement(&elementname, rowTag);
-
-    hdfsFile readFile = hdfsOpenFile(fs, filename, O_RDONLY, 0, 0, 0);
-    if (!readFile)
-    {
-        fprintf(stderr, "Failed to open %s for reading!\n", filename);
-        return EXIT_FAILURE;
-    }
-
-    if (hdfsSeek(fs, readFile, seekPos))
-    {
-        fprintf(stderr, "Failed to seek %s for reading!\n", filename);
-        return EXIT_FAILURE;
-    }
-
-    unsigned char buffer[bufferSize + 1];
-
-    bool firstRowfound = false;
-
-    string openRowTag("<");
-    openRowTag.append(elementname).append(1, '>');
-
-    string closeRowTag("</");
-    closeRowTag.append(elementname).append(1, '>');
-
-    string closeRootTag("</");
-    getLastXMLElement(&closeRootTag, footerText);
-    closeRootTag.append(1, '>');
-
-    unsigned long currentPos = seekPos + openRowTag.size();
-
-    string currentTag("");
-    bool withinRecord = false;
-    bool stopAtNextClosingTag = false;
-    bool parsingTag = false;
-
-    fprintf(stderr, "--Start looking <%s>: %ld--\n", elementname.c_str(), currentPos);
-
-    fprintf(stdout, "%s", xmlizedxpath.c_str());
-
-    unsigned long bytesLeft = readlen;
-    while (hdfsAvailable(fs, readFile) && bytesLeft > 0)
-    {
-        tSize numOfBytesRead = hdfsRead(fs, readFile, (void*) buffer, bufferSize);
-        if (numOfBytesRead <= 0)
-        {
-            fprintf(stderr, "\n--Hard Stop at: %ld--\n", currentPos);
-            break;
-        }
-
-        for (int buffIndex = 0; buffIndex < numOfBytesRead;)
-        {
-            char currChar = buffer[buffIndex];
-
-            if (currChar == '<' || parsingTag)
-            {
-                if (!parsingTag)
-                    currentTag.clear();
-
-                int tagpos = buffIndex;
-                while (tagpos < numOfBytesRead)
+                int lenpos = filestatusstr.find("length");
+                if (lenpos >= 0)
                 {
-                    currentTag.append(1, buffer[tagpos++]);
-                    if (buffer[tagpos - 1] == '>')
-                        break;
-                }
-
-                if (tagpos == numOfBytesRead && buffer[tagpos - 1] != '>')
-                {
-                    fprintf(stderr, "\nTag accross buffer reads...\n");
-
-                    currentPos += tagpos - buffIndex;
-                    bytesLeft -= tagpos - buffIndex;
-
-                    buffIndex = tagpos;
-                    parsingTag = true;
-
-                    if (bytesLeft <= 0)
+                    int colpos = filestatusstr.find_first_of(':', lenpos);
+                    if (colpos > lenpos)
                     {
-                        bytesLeft = readlen; //not sure how much longer til next EOL read up readlen;
-                        stopAtNextClosingTag = true;
+                        int compos = filestatusstr.find_first_of(',', colpos);
+                        if (compos > colpos)
+                        {
+                            filestat->length = atol(filestatusstr.substr(colpos+1,compos-1).c_str());
+                        }
                     }
-                    break;
                 }
-                else
-                    parsingTag = false;
-
-                if (!firstRowfound)
-                {
-                    firstRowfound = strcmp(currentTag.c_str(), openRowTag.c_str()) == 0;
-                    if (firstRowfound)
-                        fprintf(stderr, "--start piping tag %s at %lu--\n", currentTag.c_str(), currentPos);
-                }
-
-                if (strcmp(currentTag.c_str(), closeRootTag.c_str()) == 0)
-                {
-                    bytesLeft = 0;
-                    break;
-                }
-
-                if (strcmp(currentTag.c_str(), openRowTag.c_str()) == 0)
-                    withinRecord = true;
-                else if (strcmp(currentTag.c_str(), closeRowTag.c_str()) == 0)
-                    withinRecord = false;
-                else if (firstRowfound && !withinRecord)
-                {
-                    bytesLeft = 0;
-                    fprintf(stderr, "Unexpected Tag found: %s at position %lu\n", currentTag.c_str(), currentPos);
-                    break;
-                }
-
-                currentPos += tagpos - buffIndex;
-                bytesLeft -= tagpos - buffIndex;
-
-                buffIndex = tagpos;
-
-                if (bytesLeft <= 0 && !withinRecord)
-                    stopAtNextClosingTag = true;
-
-                if (stopAtNextClosingTag && strcmp(currentTag.c_str(), closeRowTag.c_str()) == 0)
-                {
-                    fprintf(stdout, "%s", currentTag.c_str());
-                    fprintf(stderr, "--stop piping at %s %lu--\n", currentTag.c_str(), currentPos);
-                    bytesLeft = 0;
-                    break;
-                }
-
-                if (firstRowfound)
-                    fprintf(stdout, "%s", currentTag.c_str());
-                else
-                    fprintf(stderr, "skipping tag %s\n", currentTag.c_str());
-
-                if (buffIndex < numOfBytesRead)
-                    currChar = buffer[buffIndex];
-                else
-                    break;
             }
 
-            if (firstRowfound)
-                fprintf(stdout, "%c", currChar);
-
-            buffIndex++;
-            currentPos++;
-            bytesLeft--;
-
-            if (bytesLeft <= 0)
-            {
-                if (withinRecord)
-                {
-                    fprintf(stderr, "\n--Looking for last closing row tag: %ld--\n", currentPos);
-                    bytesLeft = readlen; //not sure how much longer til next EOL read up readlen;
-                    stopAtNextClosingTag = true;
-                }
-                else
-                    break;
-            }
+            retval = EXIT_SUCCESS;
         }
+        catch (...) {}
+
+        if (retval != EXIT_SUCCESS)
+            fprintf(stderr, "Error fetching HDFS file status.\n");
     }
-
-    xmlizedxpath.clear();
-
-    xpath2xml(&xmlizedxpath, rowTag, false);
-    fprintf(stdout, "%s", xmlizedxpath.c_str());
-
-    return EXIT_SUCCESS;
+    return retval;
 }
 
-int Hdfs_Connector::readCSVOffset(const char * filename, unsigned long seekPos, unsigned long readlen,
-        const char * eolseq, unsigned long bufferSize, bool outputTerminator, unsigned long recLen,
-        unsigned long maxLen, const char * quote)
+unsigned long WebHdfs_Connector::getFileSizeWeb()
+{
+    return targetfilestatus.length;
+}
+
+int WebHdfs_Connector::readFileOffsetWebToSTDOut(unsigned long seekPos, unsigned long readlen, int maxretries)
+{
+    int retval = RETURN_FAILURE;
+
+    if (!curl)
+    {
+        fprintf(stderr, "Could not connect to WebHDFS\n");
+        return retval;
+    }
+
+    curl_easy_reset(curl);
+    string readfileurl;
+    string requestheader;
+
+    readfileurl.append(targetfileurl).append("?");
+    if (hasUserName())
+        readfileurl.append("user.name=").append(username).append("&");
+
+    readfileurl.append("op=OPEN&offset=");
+    readfileurl.append(template2string(seekPos));
+    readfileurl.append("&length=");
+    readfileurl.append(template2string(readlen));
+
+    fprintf(stderr, "Reading file data: %s\n", readfileurl.c_str());
+
+    CURLcode res;
+    int failed_attempts = 0;
+    double dlsize = 0;
+    double tottime = 0;
+    double dlspeed = 0;
+
+    do
+    {
+        curl_easy_setopt(curl, CURLOPT_URL, readfileurl.c_str());
+        curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, true);
+        curl_easy_setopt(curl, CURLOPT_VERBOSE, true);
+
+        res = curl_easy_perform(curl);
+
+        if (res == CURLE_OK)
+        {
+            curl_easy_getinfo(curl, CURLINFO_SIZE_DOWNLOAD, &dlsize);
+            curl_easy_getinfo(curl, CURLINFO_TOTAL_TIME, &tottime);
+            curl_easy_getinfo(curl, CURLINFO_SPEED_DOWNLOAD, &dlspeed);
+        }
+        else
+        {
+            failed_attempts++;
+            fprintf(stderr, "Error attempting to read from HDFS file: \n\t%s\n", readfileurl.c_str());
+        }
+    }
+    while(res != CURLE_OK && failed_attempts <= maxretries);
+
+    if (res == CURLE_OK)
+    {
+        retval = EXIT_SUCCESS;
+        fprintf(stderr, "\nPipe in FLAT file results:\n");
+        fprintf(stderr, "Read time: %.3fsecs\t ", tottime);
+        fprintf(stderr, "Read speed: %.0fbytes/sec\n", dlspeed);
+        fprintf(stderr, "Read size: %.0fbytes\n", dlsize);
+    }
+
+    return retval;
+}
+
+int WebHdfs_Connector::readCSVOffsetWeb(unsigned long seekPos,
+        unsigned long readlen, const char * eolseq, unsigned long bufferSize, bool outputTerminator,
+        unsigned long recLen, unsigned long maxLen, const char * quote, int maxretries)
 {
     fprintf(stderr, "CSV terminator: \'%s\' and quote: \'%c\'\n", eolseq, quote[0]);
     unsigned long recsFound = 0;
-
-    hdfsFile readFile = hdfsOpenFile(fs, filename, O_RDONLY, 0, 0, 0);
-    if (!readFile)
-    {
-        fprintf(stderr, "Failed to open %s for reading!\n", filename);
-        return EXIT_FAILURE;
-    }
 
     unsigned eolseqlen = strlen(eolseq);
     if (seekPos > eolseqlen)
         seekPos -= eolseqlen; //read back sizeof(EOL) in case the seekpos happens to be a the first char after an EOL
 
-    if (hdfsSeek(fs, readFile, seekPos))
-    {
-        fprintf(stderr, "Failed to seek %s for reading!\n", filename);
-        return EXIT_FAILURE;
-    }
-
     bool withinQuote = false;
-    unsigned char buffer[bufferSize + 1];
+
+    string bufferstr ="";
+    bufferstr.resize(bufferSize);
 
     bool stopAtNextEOL = false;
-    bool firstEOLfound = seekPos == 0 ? true : false;
+    bool firstEOLfound = seekPos == 0;
 
     unsigned long currentPos = seekPos;
 
@@ -412,15 +248,27 @@ int Hdfs_Connector::readCSVOffset(const char * filename, unsigned long seekPos, 
 
     unsigned long bytesLeft = readlen;
 
-    while (hdfsAvailable(fs, readFile) && bytesLeft > 0)
+    const char * buffer;
+
+    curl_easy_reset(curl);
+
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, true);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeToStrCallBackCurl);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &bufferstr);
+
+    while(bytesLeft > 0)
     {
-        tSize num_read_bytes = hdfsRead(fs, readFile, (void*) buffer, bufferSize);
+        bufferstr.clear();
+        double num_read_bytes = readTargetFileOffsetToBufferWeb(currentPos, bytesLeft > bufferSize ? bufferSize : bytesLeft, maxretries);
 
         if (num_read_bytes <= 0)
         {
             fprintf(stderr, "\n--Hard Stop at: %ld--\n", currentPos);
             break;
         }
+
+        buffer = bufferstr.c_str();
+
         for (int bufferIndex = 0; bufferIndex < num_read_bytes; bufferIndex++, currentPos++)
         {
             char currChar = buffer[bufferIndex];
@@ -437,7 +285,7 @@ int Hdfs_Connector::readCSVOffset(const char * filename, unsigned long seekPos, 
             if (currChar == eolseq[0] && !withinQuote)
             {
                 bool eolfound = true;
-                tSize extraNumOfBytesRead = 0;
+                double extraNumOfBytesRead = 0;
                 string tmpstr("");
 
                 if (eolseqlen > 1)
@@ -451,15 +299,19 @@ int Hdfs_Connector::readCSVOffset(const char * filename, unsigned long seekPos, 
                     if (eoli == num_read_bytes && tmpstr.size() < eolseqlen)
                     {
                         //looks like we have to do a remote read, but before we do, let's make sure the substring matches
-                        if (strncmp(eolseq, tmpstr.c_str(), tmpstr.size()) == 0)
+                        if (strncmp(eolseq, tmpstr.c_str(), tmpstr.size())==0)
                         {
-                            unsigned char tmpbuffer[eolseqlen - tmpstr.size() + 1];
+                            string tmpbuffer = "";
+                            curl_easy_setopt(curl, CURLOPT_WRITEDATA, &tmpbuffer);
                             //TODO have to make a read... of eolseqlen - tmpstr.size is it worth it?
-                            //extraNumOfBytesRead = hdfsRead(*fs, readFile, (void*) tmpbuffer,
-                            extraNumOfBytesRead = hdfsRead(fs, readFile, (void*) tmpbuffer, eolseqlen - tmpstr.size());
+                            //read from the current position scanned on the file (currentPos) + number of char looked ahead for eol (eoli - bufferIndex)
+                            //up to the necessary chars to determine if we're currently scanning the EOL sequence (eolseqlen - tmpstr.size()
 
-                            for (int y = 0; y < extraNumOfBytesRead; y++)
-                                tmpstr.append(1, tmpbuffer[y]);
+                            extraNumOfBytesRead = readTargetFileOffsetToBufferWeb(currentPos + (eoli - bufferIndex), eolseqlen - tmpstr.size(), maxretries);
+                            for(int y = 0; y < extraNumOfBytesRead; y++)
+                                tmpstr.append(1, tmpbuffer.at(y));
+
+                            curl_easy_setopt(curl, CURLOPT_WRITEDATA, &bufferstr);
                         }
                     }
 
@@ -475,7 +327,7 @@ int Hdfs_Connector::readCSVOffset(const char * filename, unsigned long seekPos, 
                         currentPos = currentPos + eolseqlen - 1;
                         bytesLeft = bytesLeft - eolseqlen;
 
-                        fprintf(stderr, "\n--Start reading: %ld--\n", currentPos);
+                        fprintf(stderr, "\n--Start reading: %ld --\n", currentPos);
 
                         firstEOLfound = true;
                         continue;
@@ -483,7 +335,6 @@ int Hdfs_Connector::readCSVOffset(const char * filename, unsigned long seekPos, 
 
                     if (outputTerminator)
                     {
-                        //if (currentPos > seekPos) //Don't output first EOL
                         fprintf(stdout, "%s", eolseq);
 
                         bufferIndex += eolseqlen;
@@ -492,6 +343,7 @@ int Hdfs_Connector::readCSVOffset(const char * filename, unsigned long seekPos, 
                     }
 
                     recsFound++;
+
                     if (stopAtNextEOL)
                     {
                         fprintf(stderr, "\n--Stop piping: %ld--\n", currentPos);
@@ -503,14 +355,6 @@ int Hdfs_Connector::readCSVOffset(const char * filename, unsigned long seekPos, 
                         currChar = buffer[bufferIndex];
                     else
                         break;
-                }
-                else if (extraNumOfBytesRead > 0)
-                {
-                    if (hdfsSeek(fs, readFile, hdfsTell(fs, readFile) - extraNumOfBytesRead))
-                    {
-                        fprintf(stderr, "Error while attempting to correct seek position\n");
-                        return EXIT_FAILURE;
-                    }
                 }
             }
 
@@ -524,9 +368,9 @@ int Hdfs_Connector::readCSVOffset(const char * filename, unsigned long seekPos, 
             {
                 fprintf(stderr, "%c", currChar);
                 bytesLeft--;
-                if (maxLen > 0 && currentPos - seekPos > maxLen * 10)
+                if(maxLen > 0 && currentPos-seekPos > maxLen * 10)
                 {
-                    fprintf(stderr, "\nFirst EOL was not found within the first %lu bytes", currentPos - seekPos);
+                    fprintf(stderr, "\nFirst EOL was not found within the first %ld bytes", currentPos-seekPos);
                     return EXIT_FAILURE;
                 }
             }
@@ -534,304 +378,262 @@ int Hdfs_Connector::readCSVOffset(const char * filename, unsigned long seekPos, 
             if (stopAtNextEOL)
                 fprintf(stderr, "%c", currChar);
 
-            // ok, so if bytesLeft <= 0 at this point, we need to keep piping
-            // IF the last char read was not an EOL char
-            if (bytesLeft <= 0 && currChar != eolseq[0])
+            // If bytesLeft <= 0 at this point, but he haven't encountered
+            // the last EOL, need to continue piping untlil EOL is encountered.
+            if (bytesLeft <= 0  && currChar != eolseq[0])
             {
-                if (!firstEOLfound)
+                if(!firstEOLfound)
                 {
-                    fprintf(stderr,
-                            "\n--Reached end of readlen before finding first record start at: %ld (breaking out)--\n",
-                            currentPos);
+                    fprintf(stderr, "\n--Reached end of readlen before finding first record start at: %ld (breaking out)--\n",  currentPos);
                     break;
                 }
 
-                fprintf(stderr, "\n--Looking for Last EOL: %ld--\n", currentPos);
-                bytesLeft = readlen; //not sure how much longer until next EOL read up readlen;
+                if (stopAtNextEOL)
+                {
+                    fprintf(stderr, "Could not find last EOL, breaking out a position %ld\n", currentPos);
+                    break;
+                }
+
+                fprintf(stderr, "\n--Looking for Last EOL: %ld --\n", currentPos);
+                bytesLeft = maxLen; //not sure how much longer until next EOL read up max record len;
                 stopAtNextEOL = true;
             }
         }
     }
 
     fprintf(stderr, "\nCurrentPos: %ld, RecsFound: %ld\n", currentPos, recsFound);
-    hdfsCloseFile(fs, readFile);
 
     return EXIT_SUCCESS;
 }
 
-int Hdfs_Connector::readFileOffset(const char * filename, tOffset seekPos, unsigned long readlen,
-        unsigned long bufferSize)
+double WebHdfs_Connector::readTargetFileOffsetToBufferWeb(unsigned long seekPos, unsigned long readlen, int maxretries)
 {
-    hdfsFile readFile = hdfsOpenFile(fs, filename, O_RDONLY, 0, 0, 0);
-    if (!readFile)
+    double returnval = 0;
+
+    if (!curl)
     {
-        fprintf(stderr, "Failed to open %s for reading!\n", filename);
-        return EXIT_FAILURE;
+        fprintf(stderr, "Could not connect to WebHDFS");
+        return returnval;
     }
 
-    if (hdfsSeek(fs, readFile, seekPos))
+    char readfileurl [1024];
+    if (hasUserName())
+        sprintf(readfileurl, "%s?user.name=%s&op=OPEN&offset=%lu&length=%lu",targetfileurl.c_str(), username.c_str(), seekPos,readlen);
+    else
+        sprintf(readfileurl, "%s?op=OPEN&offset=%lu&length=%lu",targetfileurl.c_str(), seekPos,readlen);
+
+    curl_easy_setopt(curl, CURLOPT_URL, readfileurl);
+
+    CURLcode res;
+    int failed_attempts = 0;
+    do
     {
-        fprintf(stderr, "Failed to seek %s for reading!\n", filename);
-        return EXIT_FAILURE;
+        res = curl_easy_perform(curl);
+
+        if (res == CURLE_OK)
+        {
+            double dlsize;
+            curl_easy_getinfo(curl, CURLINFO_SIZE_DOWNLOAD, &dlsize);
+            if (dlsize > readlen)
+                fprintf(stderr, "Warning: received incorrect number of bytes from HDFS.\n");
+            else
+                returnval = dlsize;
+        }
+        else
+        {
+            failed_attempts++;
+            fprintf(stderr, "Error attempting to read from HDFS file: \n\t%s\n", readfileurl);
+        }
     }
+    while(res != CURLE_OK && failed_attempts <= maxretries);
 
-    unsigned char buffer[bufferSize + 1];
-
-    unsigned long currentPos = seekPos;
-
-    fprintf(stderr, "\n--Start piping: %ld--\n", currentPos);
-
-    unsigned long bytesLeft = readlen;
-    while (hdfsAvailable(fs, readFile) && bytesLeft > 0)
-    {
-        tSize num_read_bytes = hdfsRead(fs, readFile, buffer, bytesLeft < bufferSize ? bytesLeft : bufferSize);
-        if (num_read_bytes <= 0)
-            break;
-        bytesLeft -= num_read_bytes;
-        for (int i = 0; i < num_read_bytes; i++, currentPos++)
-            fprintf(stdout, "%c", buffer[i]);
-    }
-
-    fprintf(stderr, "--\nStop Streaming: %ld--\n", currentPos);
-
-    hdfsCloseFile(fs, readFile);
-
-    return EXIT_SUCCESS;
+    return returnval;
 }
 
-int Hdfs_Connector::streamInFile(const char * rfile, int bufferSize)
+int WebHdfs_Connector::writeFlatOffsetWeb(long blocksize, short replication, int buffersize, const char * pipeorfilename, unsigned nodeid, unsigned clustercount)
 {
-    if (!fs)
+    int retval = RETURN_FAILURE;
+
+    if (strlen(pipeorfilename) <= 0)
     {
-        fprintf(stderr, "Could not connect to hdfs on");
-        return RETURN_FAILURE;
+        fprintf(stderr, "Bad data pipe or file name found");
+        return retval;
     }
 
-    unsigned long fileTotalSize = 0;
-
-    hdfsFileInfo *fileInfo = NULL;
-    if ((fileInfo = hdfsGetPathInfo(fs, rfile)) != NULL)
+    if (!curl)
     {
-        fileTotalSize = fileInfo->mSize;
-        hdfsFreeFileInfo(fileInfo, 1);
+        fprintf(stderr, "Could not connect to WebHDFS");
+        return retval;
+    }
+
+    curl_easy_reset(curl);
+
+    char openfileurl [1024];
+    if (hasUserName())
+        sprintf(openfileurl, "%s-parts/part_%d_%d?user.name=%s&op=CREATE&replication=%d&overwrite=true",targetfileurl.c_str(),nodeid, clustercount,username.c_str(), 1);
+    else
+        sprintf(openfileurl, "%s-parts/part_%d_%d?op=CREATE&replication=%d&overwrite=true",targetfileurl.c_str(),nodeid, clustercount, 1);
+
+    _IO_FILE * datafileorpipe;
+    datafileorpipe = fopen(pipeorfilename, "rb");
+
+    fprintf(stderr, "Setting up new HDFS file: %s\n", openfileurl);
+
+    curl_easy_setopt(curl, CURLOPT_READFUNCTION, continueCallBackCurl);
+    curl_easy_setopt(curl, CURLOPT_READDATA, datafileorpipe);
+    curl_easy_setopt(curl, CURLOPT_URL, openfileurl);
+    curl_easy_setopt(curl, CURLOPT_PUT, true);
+    curl_easy_setopt(curl, CURLOPT_VERBOSE, true);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, false);
+
+    string header;
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeToStrCallBackCurl);
+    curl_easy_setopt(curl,   CURLOPT_WRITEHEADER, &header);
+
+    CURLcode res = curl_easy_perform(curl);
+
+    if (res == CURLE_OK)
+    {
+        size_t found;
+        found = header.find_first_of("307 TEMPORARY_REDIRECT");
+//        HTTP/1.1 100 Continue\\r\\n\\r\\nHTTP/1.1 307 TEMPORARY_REDIRECT\\r\\nContent-Type: application/json\\r\\nExpires: Thu, 01-Jan-1970 00:00:00 GMT\\r\\nSet-Cookie: hadoop.auth=\\"u=hadoop&p=hadoop&t=simple&e=1345504538799&s=
+        if (found!=string::npos)
+        {
+            found=header.find("Location:",found+22);
+            if (found!=string::npos)
+            {
+                size_t  eolfound =header.find(EOL,found);
+                string tmp = header.substr(found+10,eolfound-(found+10) - strlen(EOL));
+                fprintf(stderr, "Redirect location: %s\n", tmp.c_str());
+
+                curl_easy_setopt(curl, CURLOPT_URL, tmp.c_str());
+                curl_easy_setopt(curl, CURLOPT_UPLOAD, true);
+                curl_easy_setopt(curl, CURLOPT_READFUNCTION, readFileCallBackCurl);
+                curl_easy_setopt(curl, CURLOPT_READDATA, datafileorpipe);
+
+                string errorbody;
+                curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeToStrCallBackCurl);
+                curl_easy_setopt(curl,   CURLOPT_WRITEDATA, &errorbody);
+
+                res = curl_easy_perform(curl);
+                if (res == CURLE_OK)
+                {
+                    if (errorbody.length() > 0)
+                        fprintf(stderr, "Error transferring file: %s\n", errorbody.c_str());
+                    else
+                        retval = EXIT_SUCCESS;
+                }
+                else
+                {
+                    fprintf(stderr, "Error transferring file. Curl error code: %d\n", res);
+                }
+            }
+        }
     }
     else
     {
-        fprintf(stderr, "Error: hdfsGetPathInfo for %s - FAILED!\n", rfile);
-        return RETURN_FAILURE;
+        fprintf(stderr, "Error setting up file: %s.\n", openfileurl);
     }
 
-    hdfsFile readFile = hdfsOpenFile(fs, rfile, O_RDONLY, bufferSize, 0, 0);
-    if (!readFile)
-    {
-        fprintf(stderr, "Failed to open %s for writing!\n", rfile);
-        return RETURN_FAILURE;
-    }
-
-    unsigned char buff[bufferSize + 1];
-    buff[bufferSize] = '\0';
-
-    for (unsigned long bytes_read = 0; bytes_read < fileTotalSize;)
-    {
-        unsigned long read_length = hdfsRead(fs, readFile, buff, bufferSize);
-        bytes_read += read_length;
-        for (unsigned long i = 0; i < read_length; i++)
-            fprintf(stdout, "%c", buff[i]);
-    }
-
-    hdfsCloseFile(fs, readFile);
-
-    return 0;
+    return retval;
 }
 
-int Hdfs_Connector::mergeFile(const char * filename, unsigned nodeid, unsigned clustercount, unsigned bufferSize,
-        unsigned flushthreshold, short filereplication, bool deleteparts)
+unsigned long WebHdfs_Connector::getTotalFilePartsSize(unsigned clustercount)
 {
-    if (nodeid == 0)
+    unsigned long totalSize = 0;
+
+    for (unsigned node = 0; node < clustercount; node++)
     {
-        if (!fs)
+        char filepartname[1024];
+        memset(&filepartname[0], 0, sizeof(filepartname));
+        sprintf(filepartname,"%s-parts/part_%d_%d", targetfileurl.c_str(), node, clustercount);
+
+        unsigned long partFileSize = getFileSizeWeb(filepartname);
+
+        if (partFileSize <= 0)
         {
-            fprintf(stderr, "Could not connect to hdfs on");
-            return RETURN_FAILURE;
+            fprintf(stderr,"Error: Could not find part file: %s", filepartname);
+            return 0;
         }
 
-        fprintf(stderr, "merging %d file(s) into %s", clustercount, filename);
-        fprintf(stderr, "Opening %s for writing!\n", filename);
-
-        hdfsFile writeFile = hdfsOpenFile(fs, filename, O_CREAT | O_WRONLY, 0, filereplication, 0);
-
-        if (!writeFile)
-        {
-            fprintf(stderr, "Failed to open %s for writing!\n", filename);
-            return EXIT_FAILURE;
-        }
-
-        tSize totalBytesWritten = 0;
-        for (unsigned node = 0; node < clustercount; node++)
-        {
-            if (node > 0)
-            {
-                writeFile = hdfsOpenFile(fs, filename, O_WRONLY | O_APPEND, 0, filereplication, 0);
-                fprintf(stderr, "Re-opening %s for append!\n", filename);
-            }
-
-            unsigned bytesWrittenSinceLastFlush = 0;
-
-            string filepartname;
-
-            createFilePartName(&filepartname, filename, nodeid, clustercount);
-
-            if (hdfsExists(fs, filepartname.c_str()) == 0)
-            {
-
-                fprintf(stderr, "Opening readfile  %s\n", filepartname.c_str());
-                hdfsFile readFile = hdfsOpenFile(fs, filepartname.c_str(), O_RDONLY, 0, 0, 0);
-                if (!readFile)
-                {
-                    fprintf(stderr, "Failed to open %s for reading!\n", filename);
-                    return EXIT_FAILURE;
-                }
-
-                unsigned char buffer[bufferSize + 1];
-
-                while (hdfsAvailable(fs, readFile))
-                {
-                    tSize num_read_bytes = hdfsRead(fs, readFile, buffer, bufferSize);
-
-                    if (num_read_bytes <= 0)
-                        break;
-
-                    tSize bytesWritten = 0;
-                    try
-                    {
-                        bytesWritten = hdfsWrite(fs, writeFile, (void*) buffer, num_read_bytes);
-                        totalBytesWritten += bytesWritten;
-                        bytesWrittenSinceLastFlush += bytesWritten;
-
-                        if (bytesWrittenSinceLastFlush >= flushthreshold)
-                        {
-                            if (hdfsFlush(fs, writeFile))
-                            {
-                                fprintf(stderr, "Failed to 'flush' %s\n", filename);
-                                return EXIT_FAILURE;
-                            }
-                            bytesWrittenSinceLastFlush = 0;
-                        }
-                    } catch (...)
-                    {
-                        fprintf(stderr, "Issue detected during HDFSWrite\n");
-                        fprintf(stderr, "Bytes written in current iteration: %d\n", bytesWritten);
-                        return EXIT_FAILURE;
-                    }
-                }
-
-                if (hdfsFlush(fs, writeFile))
-                {
-                    fprintf(stderr, "Failed to 'flush' %s\n", filename);
-                    return EXIT_FAILURE;
-                }
-
-                fprintf(stderr, "Closing readfile  %s\n", filepartname.c_str());
-                hdfsCloseFile(fs, readFile);
-
-                if (deleteparts)
-                {
-                    hdfsDelete(fs, filepartname.c_str());
-                }
-            }
-            else
-            {
-                fprintf(stderr, "Could not merge, part %s was not located\n", filepartname.c_str());
-                return EXIT_FAILURE;
-            }
-
-            if (deleteparts)
-            {
-                filepartname.assign(filename);
-                filepartname.append("-parts");
-                hdfsDelete(fs, filepartname.c_str());
-            }
-
-            fprintf(stderr, "Closing writefile %s\n", filename);
-            hdfsCloseFile(fs, writeFile);
-        }
+        totalSize += partFileSize;
     }
-    return EXIT_SUCCESS;
+
+    return totalSize;
 }
 
-int Hdfs_Connector::writeFlatOffset(const char * filename, unsigned nodeid, unsigned clustercount,
-        const char * fileorpipename)
+unsigned long WebHdfs_Connector::appendBufferOffsetWeb(long blocksize, short replication, int buffersize, unsigned char * buffer)
 {
-    if (!fs)
+    //curl -i -X POST "http://<HOST>:<PORT>/webhdfs/v1/<PATH>?op=APPEND[&buffersize=<INT>]"
+
+    unsigned long retval = RETURN_FAILURE;
+
+    if (!curl)
     {
-        fprintf(stderr, "Could not connect to hdfs on");
-        return RETURN_FAILURE;
+        fprintf(stderr, "Could not connect to WebHDFS");
+        return retval;
     }
 
-    string filepartname;
+    curl_easy_reset(curl);
 
-    createFilePartName(&filepartname, filename, nodeid, clustercount);
+    char openfileurl [1024];
+    if (hasUserName())
+        sprintf(openfileurl, "%s?user.name=%s&op=APPEND&buffersize=%d",targetfileurl.c_str(), username.c_str(), buffersize);
+    else
+        sprintf(openfileurl, "%s?op=APPEND&buffersize=%d",targetfileurl.c_str(), buffersize);
 
-    hdfsFile writeFile = hdfsOpenFile(fs, filepartname.c_str(), O_CREAT | O_WRONLY, 0, 1, 0);
+    curl_easy_setopt(curl, CURLOPT_READFUNCTION, continueCallBackCurl);
+    curl_easy_setopt(curl, CURLOPT_URL, openfileurl);
+    curl_easy_setopt(curl, CURLOPT_POST, true);
+    curl_easy_setopt(curl, CURLOPT_VERBOSE, false);
 
-    if (!writeFile)
+    string header;
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeToStrCallBackCurl);
+    curl_easy_setopt(curl,   CURLOPT_WRITEHEADER, &header);
+
+    CURLcode res = curl_easy_perform(curl);
+
+    if (res == CURLE_OK)
     {
-        fprintf(stderr, "Failed to open %s for writing!\n", filepartname.c_str());
-        return RETURN_FAILURE;
-    }
+        size_t found;
+        found = header.find("307 TEMPORARY_REDIRECT");
 
-    fprintf(stderr, "Opened HDFS file %s for writing successfully...\n", filepartname.c_str());
-
-    fprintf(stderr, "Opening pipe:  %s \n", fileorpipename);
-
-    ifstream in;
-    in.open(fileorpipename, ios::in | ios::binary);
-
-    char char_ptr[124 * 100]; //TODO: this should be configurable.
-                                // should it be bigger/smaller?
-                                // should it match the HDFS file block size?
-
-    size_t bytesread = 0;
-    size_t totalbytesread = 0;
-    size_t totalbyteswritten = 0;
-
-    fprintf(stderr, "Writing %s to HDFS.", filepartname.c_str());
-    while (!in.eof())
-    {
-        memset(&char_ptr[0], 0, sizeof(char_ptr));
-        in.read(char_ptr, sizeof(char_ptr));
-        bytesread = in.gcount();
-        totalbytesread += bytesread;
-        tSize num_written_bytes = hdfsWrite(fs, writeFile, (void*) char_ptr, bytesread);
-        totalbyteswritten += num_written_bytes;
-
-        //Need to figure out how often this should be done
-        //if(totalbyteswritten % )
+        if (found!=string::npos)
         {
-            if (hdfsFlush(fs, writeFile))
+            found=header.find("Location:",found+22);
+            if (found!=string::npos)
             {
-                fprintf(stderr, "Failed to 'flush' %s\n", filepartname.c_str());
-                return EXIT_FAILURE;
+                size_t  eolfound =header.find(EOL,found);
+                string tmp = header.substr(found+10,eolfound-(found+10) - strlen(EOL));
+
+                curl_easy_setopt(curl, CURLOPT_URL, tmp.c_str());
+
+                curl_easy_setopt(curl, CURLOPT_POST, true);
+                curl_easy_setopt(curl, CURLOPT_READFUNCTION, readBufferCallBackCurl);
+                curl_easy_setopt(curl, CURLOPT_READDATA, buffer);
+                curl_easy_setopt(curl, CURLOPT_BUFFERSIZE, buffersize);
+                curl_easy_setopt(curl, CURLOPT_VERBOSE, false);
+
+                header.clear();
+                curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeToStrCallBackCurl);
+                curl_easy_setopt(curl,   CURLOPT_WRITEHEADER, &header);
+
+                res = curl_easy_perform(curl);
+
+                fprintf(stderr, "Response: %s\n", header.c_str());
             }
         }
     }
-    in.close();
 
-    if (hdfsFlush(fs, writeFile))
-    {
-        fprintf(stderr, "Failed to 'flush' %s\n", filepartname.c_str());
-        return EXIT_FAILURE;
-    }
+    if (res != CURLE_OK)
+        fprintf(stderr, "Error transferring file. Curl error code: %d\n", res);
+    else
+        retval = buffersize;
 
-    fprintf(stderr, "\n total read: %lu, total written: %lu\n", totalbytesread, totalbyteswritten);
-
-    int clos = hdfsCloseFile(fs, writeFile);
-    fprintf(stderr, "hdfsCloseFile result: %d", clos);
-
-    return EXIT_SUCCESS;
+    return retval;
 }
 
-void Hdfs_Connector::escapedStringToChars(const char * source, string & escaped)
+void WebHdfs_Connector::expandEscapedChars(const char * source, string & escaped)
 {
     int si = 0;
 
@@ -898,7 +700,7 @@ void Hdfs_Connector::escapedStringToChars(const char * source, string & escaped)
 
 int main(int argc, char **argv)
 {
-    Hdfs_Connector * connector = NULL;
+    WebHdfs_Connector * connector = NULL;
 
     unsigned int bufferSize = 1024 * 100;
     unsigned int flushThreshold = bufferSize * 10;
@@ -907,9 +709,11 @@ int main(int argc, char **argv)
     unsigned nodeID = 0;
     unsigned long recLen = 0;
     unsigned long maxLen = 0;
+    unsigned long dsLen = 0;
     const char * fileName = "";
     const char * hadoopHost = "default";
-    int hadoopPort = 0;
+    const char * hadoopPort = "0";
+
     string format("");
     string foptions("");
     string data("");
@@ -928,37 +732,42 @@ int main(int argc, char **argv)
     const char * hdfsgroup = "";
     const char * pipepath = "";
     bool cleanmerge = false;
+    bool verbose = false;
     short filereplication = 1;
+    unsigned short whdfsretrymax = 1;
 
-    enum HadoopPluginAction
+    int blocksize = 0;
+    int replication = 1;
+
+    enum HDFSConnectorAction
     {
-        HPA_INVALID = -1,
-        HPA_STREAMIN = 0,
-        HPA_STREAMOUT = 1,
-        HPA_STREAMOUTPIPE = 2,
-        HPA_READOUT = 3,
-        HPA_MERGEFILE = 4
+        HCA_INVALID = -1,
+        HCA_STREAMIN = 0,
+        HCA_STREAMOUT = 1,
+        HCA_STREAMOUTPIPE = 2,
+        HCA_READOUT = 3,
+        HCA_MERGEFILE = 4
     };
 
-    HadoopPluginAction action = HPA_INVALID;
+    HDFSConnectorAction action = HCA_INVALID;
 
     while (currParam < argc)
     {
         if (strcmp(argv[currParam], "-si") == 0)
         {
-            action = HPA_STREAMIN;
+            action = HCA_STREAMIN;
         }
         else if (strcmp(argv[currParam], "-so") == 0)
         {
-            action = HPA_STREAMOUT;
+            action = HCA_STREAMOUT;
         }
         else if (strcmp(argv[currParam], "-sop") == 0)
         {
-            action = HPA_STREAMOUTPIPE;
+            action = HCA_STREAMOUTPIPE;
         }
         else if (strcmp(argv[currParam], "-mf") == 0)
         {
-            action = HPA_MERGEFILE;
+            action = HCA_MERGEFILE;
         }
         else if (strcmp(argv[currParam], "-clustercount") == 0)
         {
@@ -977,7 +786,7 @@ int main(int argc, char **argv)
             const char * tmp = argv[++currParam];
             while (*tmp && *tmp != '(')
                 format.append(1, *tmp++);
-            fprintf(stderr, "Format: %s", format.c_str());
+            fprintf(stderr, "Format: %s\n", format.c_str());
             if (*tmp++)
                 while (*tmp && *tmp != ')')
                     foptions.append(1, *tmp++);
@@ -996,7 +805,7 @@ int main(int argc, char **argv)
         }
         else if (strcmp(argv[currParam], "-port") == 0)
         {
-            hadoopPort = atoi(argv[++currParam]);
+            hadoopPort = argv[++currParam];
         }
         else if (strcmp(argv[currParam], "-wuid") == 0)
         {
@@ -1013,12 +822,12 @@ int main(int argc, char **argv)
         else if (strcmp(argv[currParam], "-terminator") == 0)
         {
             terminator.clear();
-            connector->escapedStringToChars(argv[++currParam], terminator);
+            connector->expandEscapedChars(argv[++currParam], terminator);
         }
         else if (strcmp(argv[currParam], "-quote") == 0)
         {
             quote.clear();
-            connector->escapedStringToChars(argv[++currParam], quote);
+            connector->expandEscapedChars(argv[++currParam], quote);
         }
         else if (strcmp(argv[currParam], "-headertext") == 0)
         {
@@ -1064,6 +873,22 @@ int main(int argc, char **argv)
         {
             filereplication = atoi(argv[++currParam]);
         }
+        else if (strcmp(argv[currParam], "-whdfsretrymax") == 0)
+        {
+           whdfsretrymax = atoi(argv[++currParam]);
+        }
+        else if (strcmp(argv[currParam], "-verbose") == 0)
+        {
+           verbose = atoi(argv[++currParam]);
+        }
+        else if (strcmp(argv[currParam], "-blocksize") == 0)
+        {
+            blocksize = atoi(argv[++currParam]);
+        }
+        else if (strcmp(argv[currParam], "-replication") == 0)
+        {
+            replication = atoi(argv[++currParam]);
+        }
         else
         {
             fprintf(stderr, "Error: Found invalid input param: %s \n", argv[currParam]);
@@ -1072,60 +897,53 @@ int main(int argc, char **argv)
         currParam++;
     }
 
-    connector = new Hdfs_Connector(hadoopHost, hadoopPort, hdfsuser);
+    connector = new WebHdfs_Connector(hadoopHost, hadoopPort, hdfsuser, fileName);
 
-    hdfsFS fs = connector->getHdfsFS();
-
-    if (fs)
+    if (connector->webHdfsReached())
     {
-        if (action == HPA_STREAMIN)
+        if (action == HCA_STREAMIN)
         {
             fprintf(stderr, "\nStreaming in %s...\n", fileName);
 
-            unsigned long fileSize = connector->getFileSize(fileName);
+            unsigned long fileSize = connector->getFileSizeWeb();
+
             if (fileSize != RETURN_FAILURE)
             {
                 if (strcmp(format.c_str(), "FLAT") == 0)
                 {
-                    unsigned long recstoread = connector->getRecordCount(fileSize, clusterCount, recLen, nodeID);
-                    if (recstoread == RETURN_FAILURE)
+                    unsigned long recstoread = getRecordCount(fileSize, clusterCount, recLen, nodeID);
+                    if (recstoread != RETURN_FAILURE)
                     {
-                        if (fs)
-                            hdfsDisconnect(fs);
+                        unsigned long totRecsInFile = fileSize / recLen;
+                        unsigned long offset = nodeID * (totRecsInFile / clusterCount) * recLen;
+                        unsigned long leftOverRecs = totRecsInFile % clusterCount;
 
-                        return EXIT_FAILURE;
+                        if (leftOverRecs > 0)
+                        {
+                            if (leftOverRecs > nodeID)
+                                offset += nodeID * recLen;
+                            else
+                                offset += leftOverRecs * recLen;
+                        }
+
+                        fprintf(stderr, "fileSize: %lu offset: %lu size bytes: %lu, recstoread:%lu\n", fileSize, offset,
+                                recstoread * recLen, recstoread);
+
+                        if (offset < fileSize)
+                            returnCode = connector->readFileOffsetWebToSTDOut(offset, recstoread * recLen, whdfsretrymax);
                     }
-
-                    unsigned long offset = nodeID * (fileSize / clusterCount / recLen) * recLen;
-                    if ((fileSize / recLen) % clusterCount > 0)
-                    {
-                        if ((fileSize / recLen) % clusterCount > nodeID)
-                            offset += nodeID * recLen;
-                        else
-                            offset += ((fileSize / recLen) % clusterCount) * recLen;
-                    }
-
-                    fprintf(stderr, "fileSize: %lu offset: %lu size bytes: %lu, recstoread:%lu\n", fileSize, offset,
-                            recstoread * recLen, recstoread);
-                    if (offset < fileSize)
-                        returnCode = connector->readFileOffset(fileName, offset, recstoread * recLen, bufferSize);
+                    else
+                        fprintf(stderr, "Could not determine number of records to read");
                 }
+
                 else if (strcmp(format.c_str(), "CSV") == 0)
                 {
                     fprintf(stderr, "Filesize: %ld, Offset: %ld, readlen: %ld\n", fileSize,
                             (fileSize / clusterCount) * nodeID, fileSize / clusterCount);
 
-                    returnCode = connector->readCSVOffset(fileName, (fileSize / clusterCount) * nodeID,
+                    returnCode = connector->readCSVOffsetWeb((fileSize / clusterCount) * nodeID,
                             fileSize / clusterCount, terminator.c_str(), bufferSize, outputTerminator, recLen, maxLen,
-                            quote.c_str());
-                }
-                else if (strcmp(format.c_str(), "XML") == 0)
-                {
-                    fprintf(stderr, "Filesize: %ld, Offset: %ld, readlen: %ld\n", fileSize,
-                            (fileSize / clusterCount) * nodeID, fileSize / clusterCount);
-
-                    returnCode = connector->readXMLOffset(fileName, (fileSize / clusterCount) * nodeID,
-                            fileSize / clusterCount, rowTag, headerText, footerText, bufferSize);
+                            quote.c_str(), whdfsretrymax);
                 }
                 else
                     fprintf(stderr, "Unknown format type: %s(%s)", format.c_str(), foptions.c_str());
@@ -1133,31 +951,20 @@ int main(int argc, char **argv)
             else
                 fprintf(stderr, "Could not determine HDFS file size: %s", fileName);
         }
-        else if (action == HPA_STREAMOUT)
+        else if (action == HCA_STREAMOUT || action == HCA_STREAMOUTPIPE)
         {
-            returnCode = connector->writeFlatOffset(fileName, nodeID, clusterCount, pipepath);
+            returnCode = connector->writeFlatOffsetWeb(blocksize, replication, bufferSize, pipepath, nodeID, clusterCount);
         }
-        else if (action == HPA_STREAMOUTPIPE)
-        {
-            returnCode = connector->writeFlatOffset(fileName, nodeID, clusterCount, pipepath);
-        }
-        else if (action == HPA_MERGEFILE)
-        {
-            returnCode = connector->mergeFile(fileName, nodeID, clusterCount, bufferSize, flushThreshold,
-                    filereplication, cleanmerge);
-        }
+        else if (action == HCA_MERGEFILE)
+            fprintf(stderr, "Merging of file parts deprecated.\n");
         else
-        {
-            fprintf(stderr, "\nNo action type detected, exiting.");
-            returnCode = EXIT_FAILURE;
-        }
+            fprintf(stderr, "\nNo action type detected, exiting.\n");
 
         if (connector)
-            delete (connector);
+            delete connector;
     }
     else
-    {
-        fprintf(stderr, "Could not connect to HDFS on %s:%d\n", hadoopHost, hadoopPort);
-    }
+        fprintf(stderr, "Could not connect to HDFS on %s:%s\n", hadoopHost, hadoopPort);
+
     return returnCode;
 }
