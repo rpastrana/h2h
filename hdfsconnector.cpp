@@ -403,6 +403,12 @@ int WebHdfs_Connector::readCSVOffsetWeb(unsigned long seekPos,
 
     fprintf(stderr, "\nCurrentPos: %ld, RecsFound: %ld\n", currentPos, recsFound);
 
+    if (currentPos == seekPos && readlen > 0 )
+    {
+       fprintf(stderr, "\n--ERROR  0 Bytes Fetched--\n");
+       return EXIT_FAILURE;
+    }
+
     return EXIT_SUCCESS;
 }
 
