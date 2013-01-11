@@ -124,7 +124,6 @@ public:
     };
 
     bool connect ();
-    int  execute ();
 
     int streamInFile(const char * rfile, int bufferSize);
     int mergeFile();
@@ -150,4 +149,12 @@ public:
 
     bool hasUserName(){return hasusername;}
     bool webHdfsReached(){return webhdfsreached;}
+
+    int listFileInfo();
+    void outputFileInfoXML(HdfsFileStatus fileInfo);
+    void outputFileAndDirInfoXML(HdfsFileStatus fileInfo);
+    int getContentCount(const char * fileurl);
+    void getFileStatusPropFromStr(string filestatusstr, const char * property, string *  value, bool filterQuotes);
+    int getDirStatus(const char * fileurl, HdfsFileStatus * filestat, int entries);
+    int populateFileStatus(string filestatusstr, const char * fileurl, HdfsFileStatus * filestat);
 };

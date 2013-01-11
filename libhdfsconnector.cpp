@@ -23,6 +23,46 @@ hdfsFS libhdfsconnector::getHdfsFS()
     return fs;
 }
 
+int libhdfsconnector::listFileInfo()
+{
+    fprintf(stdout, "%s\n <Files>\n", OutputRootXMLTagOpen);
+    try
+    {
+        if (!fs)
+        {
+            fprintf(stdout, "  <Error>\n");
+            fprintf(stdout, "   <Message>Could not connect to hdfs</Message>\n");
+            fprintf(stdout, "  </Error>\n");
+
+            return RETURN_FAILURE;
+        }
+        else
+        {
+            hdfsFileInfo *fileInfo = NULL;
+
+            if ((fileInfo = hdfsGetPathInfo(fs, fileName)) != NULL)
+            {
+               outputFileAndDirInfoXML(fileInfo);
+               hdfsFreeFileInfo(fileInfo, 1);
+            }
+            else
+            {
+               fprintf(stdout, "  <Error>\n");
+               fprintf(stdout, "   <Message>hdfsGetPathInfo for %s - FAILED!</Message>\n", fileName);
+               fprintf(stdout, "  </Error>\n");
+            }
+        }
+    }
+    catch (...)
+    {
+        printf("  <Error>   <Message>Error attempting to list file.</Message>\n  </Error>\n");
+    }
+
+    fprintf(stdout, " </Files>\n%s", OutputRootXMLTagClose);
+
+    return EXIT_SUCCESS;
+}
+
 tOffset libhdfsconnector::getBlockSize(const char * filename)
 {
     if (!fs)
@@ -112,6 +152,83 @@ void libhdfsconnector::ouputhosts(const char * rfile)
             }
             ++i;
         }
+    }
+}
+
+void libhdfsconnector::outputFileAndDirInfoXML(hdfsFileInfo * fileInfo)
+{
+    if (fileInfo->mKind == 'D')
+    {
+
+        int numEntries = 0;
+        hdfsFileInfo* pHdfsFileInfo = 0;
+        pHdfsFileInfo = hdfsListDirectory(fs, fileInfo->mName, &numEntries);
+        if (pHdfsFileInfo)
+        {
+            for (int i = 0; i < numEntries; i++)
+            {
+                char* pathname = pHdfsFileInfo[i].mName;
+                char* filenamel = rindex(pathname, '/');
+                if (filenamel != NULL)
+                {
+                    hdfsFileInfo *fileInfo = NULL;
+
+                    if ((fileInfo = hdfsGetPathInfo(fs, pathname)) != NULL)
+                    {
+                        if (fileInfo->mKind == 'D')
+                        {
+                            printf("  <Dir>\n");
+                            outputFileInfoXML(fileInfo);
+                            printf("  </Dir>\n");
+                        }
+                        else
+                        {
+                            printf("  <File>\n");
+                            outputFileInfoXML(fileInfo);
+                            printf("  </File>\n");
+                        }
+                        hdfsFreeFileInfo(fileInfo, 1);
+                    }
+                }
+            }
+            hdfsFreeFileInfo(pHdfsFileInfo, numEntries);
+        }
+        else
+        {
+            fprintf(stderr, "hdfsListDirectory call failed\n");
+        }
+    }
+    else
+    {
+        printf("  <File>\n");
+        outputFileInfoXML(fileInfo);
+        printf("  </File>\n");
+    }
+}
+
+void libhdfsconnector::outputFileInfoXML(hdfsFileInfo * fileInfo)
+{
+    try
+    {
+        if (fileInfo)
+        {
+            printf("   <Name>%s</Name>\n", fileInfo->mName);
+            printf("   <AccessTime>%ld</AccessTime>\n", fileInfo->mLastAccess);
+            printf("   <PathSuffix>%s</PathSuffix>\n", "");
+            printf("   <Type>%c</Type>\n", (char) (fileInfo->mKind));
+            printf("   <Replication>%d</Replication>\n", fileInfo->mReplication);
+            printf("   <BlockSize>%ld</BlockSize>\n", fileInfo->mBlockSize);
+            printf("   <Size>%ld</Size>\n", fileInfo->mSize);
+            //printf("   <LastMod>%s</LastMod>\n", ctime(&fileInfo->mLastMod));
+            printf("   <LastMod>%ld</LastMod>\n", fileInfo->mLastMod);
+            printf("   <Owner>%s</Owner>\n", fileInfo->mOwner);
+            printf("   <Group>%s</Group>\n", fileInfo->mGroup);
+            printf("   <Permissions>%d</Permissions>\n", fileInfo->mPermissions);
+        }
+    }
+    catch (...)
+    {
+        printf("   <Error>    <Message>Error attempting to list file property.</Message>\n    </Error>\n");
     }
 }
 
@@ -896,34 +1013,9 @@ bool libhdfsconnector::connect ()
         fs = hdfsConnect(hadoopHost, hadoopPort);
 
     if (!fs)
-    {
-        fprintf(stderr, "Error: Could not connect to hdfs via LIBHDFS on %s:%d\n", hadoopHost, hadoopPort);
         return false;
-    }
-    return true;
-};
-
-int libhdfsconnector::execute ()
-{
-    int returnCode = EXIT_FAILURE;
-
-    if (action == HCA_STREAMIN)
-    {
-       returnCode = streamFileOffset();
-    }
-    else if (action == HCA_STREAMOUT || action == HCA_STREAMOUTPIPE)
-    {
-        returnCode = writeFlatOffset();
-    }
-    else if (action == HCA_MERGEFILE)
-    {
-        returnCode = mergeFile();
-    }
     else
-    {
-        fprintf(stderr, "\nNo action type detected, exiting.");
-    }
-    return returnCode;
+        return true;
 };
 
 int main(int argc, char **argv)
@@ -932,9 +1024,20 @@ int main(int argc, char **argv)
 
     libhdfsconnector * connector = new libhdfsconnector(argc, argv);
 
-    if (connector->connect())
+    try
     {
-        returnCode = connector->execute();
+        if (connector->connect())
+        {
+            returnCode = connector->execute();
+        }
+        else
+        {
+            connector->reportConnectError();
+        }
+    }
+    catch (...)
+    {
+        connector->reportConnectError();
     }
 
     if (connector)

@@ -53,7 +53,6 @@ private:
     void outputFileInfo(hdfsFileInfo * fileInfo);
 
     bool connect ();
-    int  execute ();
 
     int readXMLOffset(const char * filename, unsigned long seekPos, unsigned long readlen, const char * rowTag,
             const char * headerText, const char * footerText, unsigned long bufferSize);
@@ -84,10 +83,14 @@ private:
     int writeFlatOffset();
 
     int streamFileOffset();
+    int listFileInfo();
+    void outputFileInfoXML(hdfsFileInfo * fileInfo);
+    void outputFileAndDirInfoXML(hdfsFileInfo * fileInfo);
 
 private:
     void getLastXMLElement(string * element, const char * xpath);
     void getLastXPathElement(string * element, const char * xpath);
     void getFirstXPathElement(string * element, const char * xpath);
     void xpath2xml(string * xml, const char * xpath, bool open);
+
 };

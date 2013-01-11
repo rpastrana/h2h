@@ -16,6 +16,7 @@
  along with this program. If not, see <http://www.gnu.org/licenses/>.
  ############################################################################## */
 
+#include <stdlib.h>
 #include <stdio.h>
 #include <string>
 #include <vector>
@@ -28,6 +29,9 @@ using namespace std;
 #define EOL "\n"
 #define RETURN_FAILURE -1
 
+static const char * OutputRootXMLTagOpen = "<HPCCHDFSConnector>";
+static const char * OutputRootXMLTagClose = "</HPCCHDFSConnector>";
+
 enum HDFSConnectorAction
 {
     HCA_INVALID = -1,
@@ -35,21 +39,23 @@ enum HDFSConnectorAction
     HCA_STREAMOUT = 1,
     HCA_STREAMOUTPIPE = 2,
     HCA_READOUT = 3,
-    HCA_MERGEFILE = 4
+    HCA_MERGEFILE = 4,
+    HCA_LISTFILEINFOXML = 5
 };
 
 struct HdfsFileStatus
 {
+   string name;
    long accessTime;
    int blockSize;
-   const char * group;
+   string group;
    long length;
    long modificationTime;
-   const char * owner;
-   const char * pathSuffix;
-   const char * permission;
+   string owner;
+   string pathSuffix;
+   string permission;
    int replication;
-   const char * type; //"FILE" | "DIRECTORY"
+   string type; //"FILE" | "DIRECTORY"
 };
 
 template <class T>
@@ -167,10 +173,72 @@ public:
     virtual ~hdfsconnector(){};
 
     virtual bool connect() = 0;
-    virtual int  execute() = 0 ;
     virtual int streamFileOffset() = 0;
     virtual int writeFlatOffset() = 0;
     virtual int mergeFile() = 0;
+    virtual int listFileInfo() = 0;
+
+    void reportExecuteError()
+    {
+        if (action == HCA_LISTFILEINFOXML)
+        {
+            fprintf(stdout, "%s\n <Files>\n  <Error>\n", OutputRootXMLTagOpen);
+            fprintf(stdout, "   <Message>Error while executing list file action on \"%s\"   </Message>", fileName);
+            fprintf(stdout, "\n  </Error>\n </Files>\n%s\n", OutputRootXMLTagClose);
+        }
+        else
+        {
+            fprintf(stderr, "Error while executing H2H action.");
+        }
+    };
+
+    void reportConnectError()
+    {
+        if (action == HCA_LISTFILEINFOXML)
+        {
+            fprintf(stdout, "%s\n <Files>\n  <Error>\n", OutputRootXMLTagOpen);
+            fprintf(stdout, "   <Message>Error while connecting to HDFS on %s:%d</Message>", hadoopHost, hadoopPort);
+            fprintf(stdout, "\n  </Error>\n </Files>\n%s\n", OutputRootXMLTagClose);
+        }
+        else
+        {
+            fprintf(stderr, "Error while connecting to HDFS.");
+        }
+    };
+
+    int execute ()
+    {
+        int returnCode = EXIT_FAILURE;
+
+        try
+        {
+            if (action == HCA_STREAMIN)
+            {
+               returnCode = streamFileOffset();
+            }
+            else if (action == HCA_STREAMOUT || action == HCA_STREAMOUTPIPE)
+            {
+                returnCode = writeFlatOffset();
+            }
+            else if (action == HCA_MERGEFILE)
+            {
+                returnCode = mergeFile();
+            }
+            else if (action == HCA_LISTFILEINFOXML)
+            {
+               returnCode = listFileInfo();
+            }
+            else
+            {
+                fprintf(stderr, "\nNo action type detected, exiting.");
+            }
+        }
+        catch (...)
+        {
+            reportExecuteError();
+        }
+        return returnCode;
+    };
 
     int parseInParams (int argc, char **argv)
     {
@@ -231,6 +299,10 @@ public:
                 action = HCA_MERGEFILE;
                 fprintf(stderr, "Action: HCA_MERGEFILE\n");
             }
+            else if (strcmp(argv[currParam], "-lfixml") == 0)
+            {
+                action = HCA_LISTFILEINFOXML;
+            }
             else if (strcmp(argv[currParam], "-clustercount") == 0)
             {
                 clusterCount = atoi(argv[++currParam]);
@@ -273,7 +345,7 @@ public:
             else if (strcmp(argv[currParam], "-port") == 0)
             {
                 hadoopPort = atoi(argv[++currParam]);
-                fprintf(stderr, "host: %d\n", hadoopPort);
+                fprintf(stderr, "port: %d\n", hadoopPort);
             }
             else if (strcmp(argv[currParam], "-wuid") == 0)
             {

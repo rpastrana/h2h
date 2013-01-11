@@ -18,6 +18,106 @@
 
 #include "webhdfsconnector.hpp"
 
+int webhdfsconnector::listFileInfo()
+{
+    fprintf(stdout, "%s\n <Files>\n", OutputRootXMLTagOpen);
+    try
+    {
+        outputFileAndDirInfoXML(targetfilestatus);
+    }
+    catch (...)
+    {
+        printf("  <Error>\n   <Message>Error attempting to fetch and list file info.</Message>\n   </Error>\n");
+    }
+    printf(" </Files>\n%s", OutputRootXMLTagClose);
+
+return EXIT_SUCCESS;
+}
+
+void webhdfsconnector::outputFileAndDirInfoXML(HdfsFileStatus  fileInfo)
+{
+    try
+    {
+        if (fileInfo.type.compare("DIRECTORY")==0)
+        {
+            int numEntries = getContentCount(fileInfo.name.c_str());
+
+            if (numEntries != RETURN_FAILURE)
+            {
+                HdfsFileStatus * dirstats;
+                dirstats = new HdfsFileStatus [numEntries];
+
+                if (getDirStatus(fileInfo.name.c_str(), dirstats, numEntries) != RETURN_FAILURE)
+                {
+                    for (int i = 0; i < numEntries; i++)
+                    {
+                       const  char * filenamel = dirstats[i].pathSuffix.c_str();
+                        if (filenamel != NULL)
+                        {
+                            if (dirstats[i].type.compare("DIRECTORY")==0)
+                            {
+                                printf("  <Dir>\n");
+                                outputFileInfoXML(dirstats[i]);
+                                printf("  </Dir>\n");
+                            }
+                            else
+                            {
+                                printf("  <File>\n");
+                                outputFileInfoXML(dirstats[i]);
+                                printf("  </File>\n");
+                            }
+                        }
+                    }
+                }
+                else
+                {
+                    printf("  <Error>   <Message>Error attempting to retrieve directory content list.</Message>\n  </Error>\n");
+                }
+            }
+            else
+            {
+                printf("  <Error>   <Message>Error attempting to retrieve directory content counts.</Message>\n  </Error>\n");
+            }
+        }
+        else
+        {
+                printf("  <File>\n");
+                outputFileInfoXML(fileInfo);
+                printf("  </File>\n");
+        }
+    }
+    catch (...)
+    {
+        printf("  <Error>   <Message>Error attempting to list file.</Message>\n  </Error>\n");
+    }
+}
+
+void webhdfsconnector::outputFileInfoXML(HdfsFileStatus fileInfo)
+{
+    try
+    {
+        printf("   <Name>%s</Name>\n", fileInfo.name.c_str());
+        //printf("   <AccessTime>%s</AccessTime>\n", ctime(&fileInfo.accessTime));
+        printf("   <AccessTime>%ld</AccessTime>\n", fileInfo.accessTime);
+        printf("   <PathSuffix>%s</PathSuffix>\n", fileInfo.pathSuffix.c_str());
+        printf("   <Type>%s</Type>\n",  fileInfo.type.c_str());
+        //printf("   <Type>%c</Type>\n", (fileInfo.type.at(0)));
+        printf("   <Replication>%d</Replication>\n", fileInfo.replication);
+        printf("   <BlockSize>%d</BlockSize>\n", fileInfo.blockSize);
+        printf("   <Size>%ld</Size>\n", fileInfo.length);
+        //printf("   <LastMod>%s</LastMod>\n", ctime(&fileInfo.modificationTime));
+        printf("   <LastMod>%ld</LastMod>\n", fileInfo.modificationTime);
+        printf("   <Owner>%s</Owner>\n", fileInfo.owner.c_str());
+        printf("   <Group>%s</Group>\n", fileInfo.group.c_str());
+        printf("   <Permissions>%s</Permissions>\n", fileInfo.permission.c_str());
+    }
+    catch (...)
+    {
+        printf("   <Error>    <Message>Error attempting to list file property.</Message>\n    </Error>\n");
+    }
+
+}
+
 int webhdfsconnector::reachWebHDFS()
 {
     int retval = RETURN_FAILURE;
@@ -69,6 +169,231 @@ unsigned long webhdfsconnector::getFileSize()
     return targetfilestatus.length;
 }
 
+int webhdfsconnector::getContentCount(const char * fileurl)
+{
+    int retval = RETURN_FAILURE;
+
+    if (!curl)
+    {
+        fprintf(stderr, "Could not connect to WebHDFS\n");
+        return retval;
+    }
+
+    string filestatusstr;
+    string requestheader;
+
+    string getFileStatus;
+    getFileStatus.append(fileurl);
+
+    if (hasUserName())
+    {
+        getFileStatus.append("?user.name=");
+        getFileStatus.append(username);
+        getFileStatus.append("&op=GETCONTENTSUMMARY");
+    }
+    else
+        getFileStatus.append("?op=GETCONTENTSUMMARY");
+
+    curl_easy_reset(curl);
+
+    //fprintf(stderr, "Retrieving file status: %s\n", getFileStatus.c_str());
+
+    curl_easy_setopt(curl, CURLOPT_URL, getFileStatus.c_str());
+    curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 1L);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeToStrCallBackCurl);
+
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &filestatusstr);
+
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeToStrCallBackCurl);
+    curl_easy_setopt(curl, CURLOPT_WRITEHEADER, &requestheader);
+
+    CURLcode res = curl_easy_perform(curl);
+
+    if (res == CURLE_OK)
+    {
+
+        try
+        {
+            /*
+             * Not using JSON parser to avoid 3rd party deps
+             */
+
+            //fprintf(stderr, "%s.\n", filestatusstr.c_str());
+
+            if (filestatusstr.find("ContentSummary") >=0 )
+            {
+                int dircount = 0;
+                string value;
+                getFileStatusPropFromStr(filestatusstr, "directoryCount", &value, false);
+                dircount = atoi(value.c_str())-1;
+
+                getFileStatusPropFromStr(filestatusstr, "fileCount", &value, false);
+                retval = atoi(value.c_str());
+                if (dircount > 1)
+                    retval--;
+            }
+
+        }
+        catch (...) {}
+    }
+    return retval;
+}
+
+int webhdfsconnector::getDirStatus(const char * fileurl, HdfsFileStatus * filestat, int entries)
+{
+    int retval = RETURN_FAILURE;
+
+    if (!curl)
+    {
+        fprintf(stderr, "Could not connect to WebHDFS\n");
+        return retval;
+    }
+
+    string filestatusstr;
+    string requestheader;
+
+    string getFileStatus;
+    getFileStatus.append(fileurl);
+
+    if (hasUserName())
+    {
+        getFileStatus.append("?user.name=");
+        getFileStatus.append(username);
+        getFileStatus.append("&op=LISTSTATUS");
+    }
+    else
+        getFileStatus.append("?op=LISTSTATUS");
+
+    curl_easy_reset(curl);
+
+    //fprintf(stderr, "Retrieving file status: %s\n", getFileStatus.c_str());
+
+    curl_easy_setopt(curl, CURLOPT_URL, getFileStatus.c_str());
+    curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 1L);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeToStrCallBackCurl);
+
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &filestatusstr);
+
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeToStrCallBackCurl);
+    curl_easy_setopt(curl, CURLOPT_WRITEHEADER, &requestheader);
+
+    CURLcode res = curl_easy_perform(curl);
+
+    if (res == CURLE_OK)
+    {
+        try
+        {
+            /*
+             * Not using JSON parser to avoid 3rd party deps
+             */
+
+            //fprintf(stderr, "%s.\n", filestatusstr.c_str());
+
+             if (int statusespos=filestatusstr.find("FileStatuses") >=0 )
+             {
+                 if (int statuspos=filestatusstr.find("FileStatus", statusespos+12) >=0)
+                 {
+                     int arraystart = -1;
+                     int arrayend = -1;
+                     arraystart = filestatusstr.find_first_of("[", statuspos+10);
+                     if (arraystart > 0)
+                     {
+                         arrayend = filestatusstr.find_last_of("]", filestatusstr.length());
+                         if (arrayend > 0)
+                         {
+                             int currentEntryStart = -1;
+                             int currentEntryEnd = -1;
+                             currentEntryStart =arraystart+1;
+                             currentEntryEnd = filestatusstr.find_first_of("}", arraystart+1)+1;
+                             for (int i = 0; i < entries; i++)
+                             {
+                                 int len = currentEntryEnd-currentEntryStart;
+                                 string entry = filestatusstr.substr(currentEntryStart, len);
+                                 int strlen = entry.length();
+                                 //fprintf(stdout, "\nDATA   %s", entry.data());
+                                 //fprintf(stdout, "\nDATA");
+                                 populateFileStatus(entry, fileurl, &filestat[i]);
+                                 currentEntryStart = currentEntryEnd+1;
+                                 currentEntryEnd = filestatusstr.find_first_of("}", currentEntryStart)+ 1;
+                             }
+                             retval = EXIT_SUCCESS;
+                         }
+                         else
+                         {
+                             fprintf(stderr, "FileStatus array end not found");
+                         }
+                     }
+                     else
+                     {
+                         fprintf(stderr, "FileStatus array start not found");
+                     }
+                 }
+                 else
+                 {
+                     fprintf(stderr, "FileStatus array not found");
+                 }
+             }
+             else
+             {
+                 fprintf(stderr, "FileStatuses not found");
+             }
+             retval = EXIT_SUCCESS;
+        }
+        catch (...) {}
+    }
+    return retval;
+}
+
+int webhdfsconnector::populateFileStatus(string filestatusstr, const char * fileurl, HdfsFileStatus * filestat)
+{
+    int retval = RETURN_FAILURE;
+
+    filestat->name = fileurl;
+    filestat->accessTime = -1;
+    filestat->blockSize = -1;
+    filestat->group = "";
+    filestat->length = -1;
+    filestat->modificationTime = -1;
+    filestat->owner = "";
+    filestat->pathSuffix = "";
+    filestat->permission = "";
+    filestat->replication = -1;
+    filestat->type = "";
+
+    string value;
+    getFileStatusPropFromStr(filestatusstr, "type", &value, true);
+    filestat->type = value.c_str();
+
+    getFileStatusPropFromStr(filestatusstr, "length", &value, false);
+    filestat->length = atol(value.c_str());
+
+    getFileStatusPropFromStr(filestatusstr, "pathSuffix", &value, true);
+    filestat->pathSuffix = value.c_str();
+
+    getFileStatusPropFromStr(filestatusstr, "group", &value, true);
+    filestat->group = value.c_str();
+
+    getFileStatusPropFromStr(filestatusstr, "accessTime", &value, false);
+    filestat->accessTime = atol(value.c_str());
+
+    getFileStatusPropFromStr(filestatusstr, "blockSize", &value, false);
+    filestat->blockSize = atol(value.c_str());
+
+    getFileStatusPropFromStr(filestatusstr, "modificationTime", &value, false);
+    filestat->modificationTime = atol(value.c_str());
+
+    getFileStatusPropFromStr(filestatusstr, "owner", &value, true);
+    filestat->owner = value.c_str();
+
+    getFileStatusPropFromStr(filestatusstr, "permission", &value, true);
+    filestat->permission = value.c_str();
+
+    getFileStatusPropFromStr(filestatusstr, "replication", &value, false);
+    filestat->replication = atol(value.c_str());
+
+    return retval;
+}
+
 int webhdfsconnector::getFileStatus(const char * fileurl, HdfsFileStatus * filestat)
 {
     int retval = RETURN_FAILURE;
@@ -118,6 +443,7 @@ int webhdfsconnector::getFileStatus(const char * fileurl, HdfsFileStatus * files
              * Not using JSON parser to avoid 3rd party deps
              */
 
+            filestat->name = fileurl;
             filestat->accessTime = -1;
             filestat->blockSize = -1;
             filestat->group = "";
@@ -133,21 +459,8 @@ int webhdfsconnector::getFileStatus(const char * fileurl, HdfsFileStatus * files
 
             if (filestatusstr.find("FileStatus") >=0 )
             {
-                int lenpos = filestatusstr.find("length");
-                if (lenpos >= 0)
-                {
-                    int colpos = filestatusstr.find_first_of(':', lenpos);
-                    if (colpos > lenpos)
-                    {
-                        int compos = filestatusstr.find_first_of(',', colpos);
-                        if (compos > colpos)
-                        {
-                            filestat->length = atol(filestatusstr.substr(colpos+1,compos-1).c_str());
-                        }
-                    }
-                }
+                populateFileStatus(filestatusstr, fileurl, filestat);
             }
-
             retval = EXIT_SUCCESS;
         }
         catch (...) {}
@@ -156,6 +469,39 @@ int webhdfsconnector::getFileStatus(const char * fileurl, HdfsFileStatus * files
             fprintf(stderr, "Error fetching HDFS file status.\n");
     }
     return retval;
+}
+
+void webhdfsconnector::getFileStatusPropFromStr(string filestatusstr, const char * property, string * value, bool filterQuotes)
+{
+    int typepos = filestatusstr.find(property);
+    if (typepos >= 0)
+    {
+        int colpos = filestatusstr.find_first_of(':', typepos);
+        if (colpos > typepos)
+        {
+            int compos = filestatusstr.find_first_of(',', colpos);
+            if (compos <= 0)
+            {
+                compos = filestatusstr.find_first_of('}', typepos);
+            }
+
+            if (compos > colpos)
+            {
+                if (filterQuotes)
+                {
+                    if (filestatusstr.at(colpos+1)=='"' && filestatusstr.at(compos-1)=='"')
+                    {
+                        colpos++;
+                        compos--;
+                    }
+                }
+                int len = (compos-(colpos+1));
+                value->assign( filestatusstr.substr(colpos+1,len).c_str());
+            }
+            else
+                value->clear();
+        }
+    }
 }
 
 int webhdfsconnector::streamFlatFileOffset(unsigned long seekPos, unsigned long readlen, int maxretries)
@@ -610,29 +956,6 @@ bool webhdfsconnector::connect ()
     return webhdfsreached;
 };
 
-int webhdfsconnector::execute ()
-{
-    int returnCode = EXIT_FAILURE;
-
-    if (action == HCA_STREAMIN)
-    {
-       returnCode = streamFileOffset();
-    }
-    else if (action == HCA_STREAMOUT || action == HCA_STREAMOUTPIPE)
-    {
-        returnCode = writeFlatOffset();
-    }
-    else if (action == HCA_MERGEFILE)
-    {
-        returnCode = mergeFile();
-    }
-    else
-    {
-        fprintf(stderr, "\nNo action type detected, exiting.");
-    }
-    return returnCode;
-};
-
 int webhdfsconnector::streamInFile(const char * rfile, int bufferSize)
 {
     return 0;
@@ -810,9 +1133,20 @@ int main(int argc, char **argv)
 
     webhdfsconnector * connector = new webhdfsconnector(argc, argv);
 
-    if (connector->connect())
+    try
     {
-        returnCode = connector->execute();
+        if (connector->connect())
+        {
+            returnCode = connector->execute();
+        }
+        else
+        {
+            connector->reportConnectError();
+        }
+    }
+    catch (...)
+    {
+        connector->reportConnectError();
     }
 
     if (connector)

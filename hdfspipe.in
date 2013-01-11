@@ -91,7 +91,7 @@ echo "nodeid: $nodeid" 		>> $LOG
 h2hpid=0;
 h2hstatus=0;
 
-TARGETCONNECTORNAME="@HDFSCONN_EXE_NAME@";
+TARGETCONNECTORNAME="@HDFSCONN_EXE_PATH@";
 
 if [ "$1" = "" ];
 then
@@ -99,6 +99,12 @@ then
     exit 1;
 elif [ $1 = "-mf" ];
 then
+    $TARGETCONNECTORNAME ${@}      2>> $LOG;
+    h2hstatus=$?;
+    h2hpid=$!;
+elif [ $1 = "-lfixml" ];
+then
+    echo "Will attempt to fetch HDFS file list." >> $LOG;
     $TARGETCONNECTORNAME ${@}      2>> $LOG;
     h2hstatus=$?;
     h2hpid=$!;
