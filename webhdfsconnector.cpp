@@ -240,6 +240,8 @@ int webhdfsconnector::streamCSVFileOffset(unsigned long seekPos,
     if (seekPos > eolseqlen)
         seekPos -= eolseqlen; //read back sizeof(EOL) in case the seekpos happens to be a the first char after an EOL
 
+    unsigned long fileSize = getFileSize();
+
     bool withinQuote = false;
 
     string bufferstr ="";
@@ -405,8 +407,10 @@ int webhdfsconnector::streamCSVFileOffset(unsigned long seekPos,
                     break;
                 }
 
-                fprintf(stderr, "\n--Looking for Last EOL: %ld --\n", currentPos);
                 bytesLeft = maxLen; //not sure how much longer until next EOL read up max record len;
+
+                //bytesLeft = (fileSize - currentPos) > maxLen ? maxLen : (fileSize - currentPos); //not sure how much longer until next EOL read up max record len;
+                fprintf(stderr, "\n--Looking for Last EOL at pos: %ld to %ld--\n", currentPos, currentPos+bytesLeft);
                 stopAtNextEOL = true;
             }
         }
@@ -437,6 +441,7 @@ double webhdfsconnector::readTargetFileOffsetToBuffer(unsigned long seekPos, uns
     if (hasUserName())
         sprintf(readfileurl, "%s?user.name=%s&op=OPEN&offset=%lu&length=%lu",targetfileurl.c_str(), username.c_str(), seekPos,readlen);
     else
+        //sprintf(readfileurl, "%s?op=OPEN&offset=%lu&length=%lu",targetfileurl.c_str(), "1534", readlen);
         sprintf(readfileurl, "%s?op=OPEN&offset=%lu&length=%lu",targetfileurl.c_str(), seekPos,readlen);
 
     curl_easy_setopt(curl, CURLOPT_URL, readfileurl);
@@ -459,7 +464,8 @@ double webhdfsconnector::readTargetFileOffsetToBuffer(unsigned long seekPos, uns
         else
         {
             failed_attempts++;
-            fprintf(stderr, "Error attempting to read from HDFS file: \n\t%s\n", readfileurl);
+            //fprintf(stderr, "Error attempting to read from HDFS file: \n\t%s\n", readfileurl);
+            fprintf(stderr, "Error attempting to read from HDFS file: \n\t%s\n\t%s\n", readfileurl,curl_easy_strerror(res));
         }
     }
     while(res != CURLE_OK && failed_attempts <= maxretries);
@@ -775,7 +781,7 @@ int webhdfsconnector::streamFileOffset()
                     (fileSize / clusterCount) * nodeID, fileSize / clusterCount);
 
             returnCode = streamCSVFileOffset((fileSize / clusterCount) * nodeID,
-                    fileSize / clusterCount, terminator.c_str(), bufferSize, outputTerminator, recLen, maxLen,
+                    fileSize / clusterCount, terminator.c_str(), bufferSize, outputTerminator, recLen, maxLen <= 0 ? 8192 : maxLen,
                     quote.c_str(), maxRetry);
         }
         else

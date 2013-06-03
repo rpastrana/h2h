@@ -116,6 +116,8 @@ public:
     webhdfsconnector(int argc, char **argv) : hdfsconnector(argc, argv)
     {
         fprintf(stderr, "\nCreating WEBBHDFS based connector.\n");
+        fprintf(stderr, "LIBCURL VERSION: %x.\n", LIBCURL_VERSION_NUM);
+
     }
 
     ~webhdfsconnector()
