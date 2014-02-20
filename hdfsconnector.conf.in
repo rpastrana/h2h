@@ -11,6 +11,7 @@ HADOOP_SHARE_DIR=${HADOOP_STD_SHARE_PATH}
 #If libhdfs resides elsewhere, add correct location to LD_LIBRARY_PATH
 #Example:
 #export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:<path to libhdfs.so location>
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:${LIBHDFS_LIBRARIES}
 
 #TARBALL_HADOOP_LOCATION = location of tarball hadoop instalation
 #If hadoop was not installed via deb/rpm install package
