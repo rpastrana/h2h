@@ -1,6 +1,6 @@
 #ubuntu 10.04
 IF ( BUILD_WEBHDFS_VER )
-	set ( CPACK_DEBIAN_PACKAGE_DEPENDS "hpccsystems-platform, libcurl3")
+	set ( CPACK_DEBIAN_PACKAGE_DEPENDS "hpccsystems-platform, libcurl3, libcurl3-gnutls")
 ELSE ()
     set ( CPACK_DEBIAN_PACKAGE_DEPENDS "hpccsystems-platform, hadoop, openjdk-6-jre")
 ENDIF ()
